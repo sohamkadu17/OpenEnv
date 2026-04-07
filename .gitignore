@@ -1,0 +1,47 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.*
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+.tmp_*
+
+# Tooling and editor metadata
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node artifacts (future UI)
+node_modules/
+
+# Kubernetes and local cluster artifacts
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+*.kind-config.yaml
+kind-config.yaml
+
+# Build/test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+htmlcov/
+
+# OpenEnv local/runtime artifacts
+openenv-artifacts/
