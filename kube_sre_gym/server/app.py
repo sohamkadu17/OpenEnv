@@ -28,6 +28,8 @@ Usage:
     python -m server.app
 """
 
+import os
+
 try:
     from openenv.core.env_server.http_server import create_app
 except Exception as e:  # pragma: no cover
@@ -46,6 +48,10 @@ except (ImportError, ValueError):
         from kube_sre_gym_environment import KubeSreGymEnvironment
     except ImportError:
         from server.kube_sre_gym_environment import KubeSreGymEnvironment
+
+# Enable web UI by default for local development while preserving
+# explicit overrides from the runtime environment.
+os.environ.setdefault("ENABLE_WEB_INTERFACE", "true")
 
 # Create the app with web interface and README integration
 app = create_app(
