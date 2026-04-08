@@ -300,6 +300,22 @@ async def run_all_tasks(client: Optional[OpenAI], use_client: bool) -> Tuple[Lis
     return per_task_results, aggregate_score, overall_success, total_steps
 
 
+def default_task_results() -> List[Dict[str, Any]]:
+    # Ensure validator always sees all configured graded tasks, even if
+    # runtime setup fails before episodes can execute.
+    return [
+        {
+            "task_id": task_def.task_id,
+            "difficulty": task_def.difficulty,
+            "success": False,
+            "steps": 0,
+            "graded_score": SCORE_EPSILON,
+            "cumulative_reward": 0.0,
+        }
+        for task_def in TASK_CATALOG
+    ]
+
+
 def create_openai_client() -> OpenAI:
     # Use validator-injected values so all calls are routed through LiteLLM.
     base_url = os.environ["API_BASE_URL"]
@@ -341,20 +357,32 @@ async def main() -> None:
             issues.append(f"client_init_failed: {exc}")
 
     try:
-        if issues:
-            return
-
         try:
             task_results, aggregate_score, overall_success, total_steps = await run_all_tasks(
                 client,
                 use_client=True,
             )
         except Exception:
-            task_results, aggregate_score, overall_success, total_steps = await run_all_tasks(
-                client,
-                use_client=False,
-            )
+            try:
+                task_results, aggregate_score, overall_success, total_steps = await run_all_tasks(
+                    client,
+                    use_client=False,
+                )
+            except Exception:
+                task_results = default_task_results()
+                aggregate_score = clamp_open_unit_interval(
+                    sum(float(item["graded_score"]) for item in task_results) / max(1, len(task_results))
+                )
+                overall_success = False
+                total_steps = 0
     finally:
+        if len(task_results) < 3:
+            task_results = default_task_results()
+            aggregate_score = clamp_open_unit_interval(
+                sum(float(item["graded_score"]) for item in task_results) / max(1, len(task_results))
+            )
+            overall_success = False
+            total_steps = 0
         reward_trace = [float(x["graded_score"]) for x in task_results]
         log_end(
             success=overall_success,
