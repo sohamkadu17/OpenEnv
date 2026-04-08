@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.vscode/
+outputs/
+_ref_autorebot/
