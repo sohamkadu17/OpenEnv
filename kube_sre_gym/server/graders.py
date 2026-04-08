@@ -73,7 +73,7 @@ def _has_memory_patch(history: List[Dict[str, Any]]) -> bool:
     return False
 
 
-def easy_grader(trajectory: Dict[str, Any] | None = None) -> float:
+def task_fix_broken_service_selector_grader(trajectory: Dict[str, Any] | None = None) -> float:
     data = trajectory or {}
     history = _extract_history(data)
     score = _trajectory_score(data, base_shift=0.05, unsafe_penalty=0.04)
@@ -88,7 +88,7 @@ def easy_grader(trajectory: Dict[str, Any] | None = None) -> float:
     return _clamp_open_unit_interval(score)
 
 
-def medium_grader(trajectory: Dict[str, Any] | None = None) -> float:
+def task_recover_crashloopbackoff_pod_grader(trajectory: Dict[str, Any] | None = None) -> float:
     data = trajectory or {}
     history = _extract_history(data)
     score = _trajectory_score(data, base_shift=0.04, unsafe_penalty=0.05)
@@ -107,7 +107,7 @@ def medium_grader(trajectory: Dict[str, Any] | None = None) -> float:
     return _clamp_open_unit_interval(score)
 
 
-def hard_grader(trajectory: Dict[str, Any] | None = None) -> float:
+def task_resolve_oomkilled_pod_grader(trajectory: Dict[str, Any] | None = None) -> float:
     data = trajectory or {}
     history = _extract_history(data)
     score = _trajectory_score(data, base_shift=0.02, unsafe_penalty=0.06)
@@ -120,3 +120,16 @@ def hard_grader(trajectory: Dict[str, Any] | None = None) -> float:
     if endpoint_status == 200:
         score += 0.06
     return _clamp_open_unit_interval(score)
+
+
+# Backward-compatible aliases (difficulty-based naming)
+def easy_grader(trajectory: Dict[str, Any] | None = None) -> float:
+    return task_fix_broken_service_selector_grader(trajectory)
+
+
+def medium_grader(trajectory: Dict[str, Any] | None = None) -> float:
+    return task_recover_crashloopbackoff_pod_grader(trajectory)
+
+
+def hard_grader(trajectory: Dict[str, Any] | None = None) -> float:
+    return task_resolve_oomkilled_pod_grader(trajectory)
