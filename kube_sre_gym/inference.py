@@ -40,7 +40,6 @@ load_env_file()
 API_BASE_URL = os.getenv("API_BASE_URL", "").strip()
 MODEL_NAME = os.getenv("MODEL_NAME", "").strip()
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
 IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
 ENV_HTTP_URL = os.getenv("ENV_HTTP_URL", "http://127.0.0.1:8000")
@@ -78,8 +77,8 @@ def validate_prerequisites() -> Tuple[bool, List[str]]:
         issues.append("API_BASE_URL is required")
     if not MODEL_NAME:
         issues.append("MODEL_NAME is required")
-    if not (HF_TOKEN or OPENAI_API_KEY):
-        issues.append("HF_TOKEN or OPENAI_API_KEY is required")
+    if not HF_TOKEN:
+        issues.append("HF_TOKEN is required")
     if IMAGE_NAME is None and not ENV_HTTP_URL:
         issues.append("Set IMAGE_NAME/LOCAL_IMAGE_NAME or ENV_HTTP_URL")
     return len(issues) == 0, issues
@@ -277,7 +276,7 @@ async def run_all_tasks(client: OpenAI, use_client: bool) -> Tuple[List[Dict[str
 def create_openai_client() -> OpenAI:
     return OpenAI(
         base_url=API_BASE_URL,
-        api_key=HF_TOKEN or OPENAI_API_KEY,
+        api_key=HF_TOKEN,
     )
 
 
