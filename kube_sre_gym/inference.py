@@ -23,16 +23,20 @@ TASK_INCIDENT_OVERRIDES = {
 def load_env_file(path: str = ".env") -> None:
     if not os.path.exists(path):
         return
-    with open(path, "r", encoding="utf-8") as f:
-        for raw in f:
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        # Missing/invalid .env should not crash inference.
+        pass
 
 
 load_env_file()
@@ -45,8 +49,19 @@ IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
 ENV_HTTP_URL = os.getenv("ENV_HTTP_URL", "http://127.0.0.1:8000")
 TASK_NAME = os.getenv("TASK_NAME", "k8s-incident-recovery")
 BENCHMARK = os.getenv("BENCHMARK", "kube_sre_gym")
-MAX_STEPS = int(os.getenv("MAX_STEPS", "20"))
-MAX_STEPS_HARD = int(os.getenv("MAX_STEPS_HARD", "30"))
+
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+        return value if value > 0 else default
+    except Exception:
+        return default
+
+
+MAX_STEPS = _get_int_env("MAX_STEPS", 20)
+MAX_STEPS_HARD = _get_int_env("MAX_STEPS_HARD", 30)
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -129,7 +144,7 @@ def _extract_json_object(raw: str) -> str:
     return text
 
 
-def choose_action(client: OpenAI, observation: Any, step: int, task_id: str) -> Tuple[str, Dict[str, Any]]:
+def choose_action(client: Optional[OpenAI], observation: Any, step: int, task_id: str) -> Tuple[str, Dict[str, Any]]:
     allowed_tools = set(getattr(observation, "allowed_tools", []) or [])
     payload = {
         "task_id": task_id,
@@ -140,6 +155,9 @@ def choose_action(client: OpenAI, observation: Any, step: int, task_id: str) -> 
         "recent_events": (getattr(observation, "recent_events", []) or [])[:6],
         "allowed_tools": sorted(allowed_tools),
     }
+
+    if client is None:
+        return _fallback_action(observation)
 
     try:
         completion = client.chat.completions.create(
@@ -177,7 +195,7 @@ def choose_action(client: OpenAI, observation: Any, step: int, task_id: str) -> 
 async def _run_task_episode(
     task_def: TaskDefinition,
     max_steps: int,
-    client: OpenAI,
+    client: Optional[OpenAI],
     use_client: bool,
 ) -> Tuple[bool, int, float, float]:
     rewards: List[float] = []
@@ -238,18 +256,23 @@ async def _run_task_episode(
             pass
 
 
-async def run_all_tasks(client: OpenAI, use_client: bool) -> Tuple[List[Dict[str, Any]], float, bool, int]:
+async def run_all_tasks(client: Optional[OpenAI], use_client: bool) -> Tuple[List[Dict[str, Any]], float, bool, int]:
     per_task_results: List[Dict[str, Any]] = []
     total_steps = 0
 
     for task_def in TASK_CATALOG:
         max_steps = MAX_STEPS if task_def.difficulty != "hard" else MAX_STEPS_HARD
-        success, steps, graded_score, cumulative_reward = await _run_task_episode(
-            task_def,
-            max_steps,
-            client,
-            use_client=use_client,
-        )
+        try:
+            success, steps, graded_score, cumulative_reward = await _run_task_episode(
+                task_def,
+                max_steps,
+                client,
+                use_client=use_client,
+            )
+        except Exception as exc:
+            # Keep benchmark running task-by-task even if one episode fails hard.
+            log_step(0, json.dumps({"task_id": task_def.task_id, "tool": "internal", "args": {}}, separators=(",", ":")), 0.0, True, f"episode_error: {exc}")
+            success, steps, graded_score, cumulative_reward = False, 0, 0.0, 0.0
         total_steps += steps
         per_task_results.append(
             {
@@ -282,22 +305,32 @@ def create_openai_client() -> OpenAI:
 
 async def main() -> None:
     ok, issues = validate_prerequisites()
-    if not ok:
-        raise RuntimeError("; ".join(issues))
+    client: Optional[OpenAI] = None
+    if ok:
+        try:
+            client = create_openai_client()
+        except Exception as exc:
+            issues.append(f"client_init_failed: {exc}")
 
-    client = create_openai_client()
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    if issues:
+        print(f"[WARN] {'; '.join(issues)}", flush=True)
 
     try:
         task_results, aggregate_score, overall_success, total_steps = await run_all_tasks(
             client,
             use_client=True,
         )
-    except Exception:
-        task_results, aggregate_score, overall_success, total_steps = await run_all_tasks(
-            client,
-            use_client=False,
-        )
+    except Exception as remote_exc:
+        print(f"[WARN] remote_mode_failed: {remote_exc}", flush=True)
+        try:
+            task_results, aggregate_score, overall_success, total_steps = await run_all_tasks(
+                client,
+                use_client=False,
+            )
+        except Exception as local_exc:
+            print(f"[WARN] local_mode_failed: {local_exc}", flush=True)
+            task_results, aggregate_score, overall_success, total_steps = [], 0.0, False, 0
 
     reward_trace = [float(x["graded_score"]) for x in task_results]
     log_end(
@@ -309,4 +342,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as exc:
+        print(f"[FATAL] unhandled_inference_exception: {exc}", flush=True)
+        log_end(success=False, steps=0, score=0.0, rewards=[])
