@@ -188,6 +188,10 @@ class KubectlTooling:
 
         blocked = [
             "--privileged",
+            " rm ",
+            "rm ",
+            ";rm",
+            "&&rm",
             "mount ",
             "umount ",
             "shutdown",
@@ -216,6 +220,33 @@ class KubectlTooling:
                 parsed={},
             )
         return self._run(["kubectl", "exec", pod, "-n", self.namespace, "--", "sh", "-c", command])
+
+    def get_services_summary(self) -> KubectlResult:
+        result = self._run(["kubectl", "get", "svc", "-n", self.namespace, "-o", "json"])
+        if not result.ok:
+            return result
+
+        parsed = self._parse_json(result.stdout)
+        if parsed is None:
+            return self._error_result("failed to parse service list response as JSON")
+
+        items = parsed.get("items", []) if isinstance(parsed, dict) else []
+        services: List[Dict] = []
+        for item in items:
+            spec = item.get("spec", {}) or {}
+            ports = spec.get("ports", []) or []
+            services.append(
+                {
+                    "name": item.get("metadata", {}).get("name", ""),
+                    "type": spec.get("type", "ClusterIP"),
+                    "cluster_ip": spec.get("clusterIP", ""),
+                    "ports": [p.get("port") for p in ports if p.get("port") is not None],
+                }
+            )
+
+        result.parsed = {"services": services}
+        result.stdout = self._truncate(json.dumps(services, separators=(",", ":"), ensure_ascii=True), limit=5000)
+        return result
 
     def get_pod_summary(self, selector: Optional[str] = None) -> KubectlResult:
         cmd = ["kubectl", "get", "pods", "-n", self.namespace, "-o", "json"]
@@ -448,6 +479,21 @@ class KubectlTooling:
                     }
                 )
             payload = {"items": items}
+            return _result(True, stdout=json.dumps(payload), parsed=payload)
+
+        if command[:3] == ["kubectl", "get", "svc"] and "-o" in command and "json" in command:
+            payload = {
+                "items": [
+                    {
+                        "metadata": {"name": "sre-app"},
+                        "spec": {
+                            "type": "ClusterIP",
+                            "clusterIP": "10.96.0.25",
+                            "ports": [{"port": 80}],
+                        },
+                    }
+                ]
+            }
             return _result(True, stdout=json.dumps(payload), parsed=payload)
 
         if command[:3] == ["kubectl", "get", "endpoints"]:

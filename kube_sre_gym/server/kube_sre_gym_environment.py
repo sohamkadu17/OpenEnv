@@ -44,6 +44,18 @@ class KubeSreGymEnvironment(Environment):
         "kubectl_exec",
     ]
 
+    TOOL_SCHEMAS: Dict[str, Dict[str, List[str]]] = {
+        "kubectl_get": {"required": ["resource"], "optional": ["name", "selector", "summary"]},
+        "kubectl_describe": {"required": ["resource", "name"], "optional": []},
+        "kubectl_logs": {"required": ["pod"], "optional": ["container", "tail"]},
+        "kubectl_events": {"required": [], "optional": ["limit"]},
+        "kubectl_patch": {"required": ["resource", "name", "patch"], "optional": ["patch_type"]},
+        "kubectl_apply_yaml": {"required": ["yaml"], "optional": []},
+        "kubectl_delete_pod": {"required": ["pod"], "optional": []},
+        "kubectl_rollout_undo": {"required": ["deployment"], "optional": []},
+        "kubectl_exec": {"required": ["pod", "command"], "optional": []},
+    }
+
     def __init__(self):
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._episode = 0
@@ -64,6 +76,8 @@ class KubeSreGymEnvironment(Environment):
         self._step_logs: List[Dict[str, Any]] = []
         self._safety_violations = 0
         self._health_cache: Optional[Dict[str, Any]] = None
+        self._episode_start_time = time.time()
+        self._resolved_step: Optional[int] = None
         self._last_health: Dict[str, Any] = {
             "running_pods": 0,
             "total_pods": 0,
@@ -77,6 +91,8 @@ class KubeSreGymEnvironment(Environment):
         self._step_logs = []
         self._safety_violations = 0
         self._health_cache = None
+        self._episode_start_time = time.time()
+        self._resolved_step = None
 
         connectivity = self._check_cluster_connectivity()
         if not connectivity.ok:
@@ -133,10 +149,13 @@ class KubeSreGymEnvironment(Environment):
         self._state.step_count += 1
         self._health_cache = None
         try:
-            result, safety_penalty = self._dispatch_tool(action)
+            result, safety_penalty, safety_violation, error_msg = self._dispatch_tool(action)
             health = self._collect_health(use_cache=True)
             done = self._is_resolved(health) or self._state.step_count >= self._max_steps
             reward = self._compute_reward(result, safety_penalty, done, health)
+
+            if done and self._is_resolved(health) and self._resolved_step is None:
+                self._resolved_step = self._state.step_count
 
             phase = "VERIFY" if result.ok else "ANALYZE"
             if done and self._is_resolved(health):
@@ -163,6 +182,9 @@ class KubeSreGymEnvironment(Environment):
                 done=done,
                 health=health,
                 thought=action.thought,
+                step_success=result.ok,
+                error=error_msg,
+                safety_violation=safety_violation,
             )
         except Exception as exc:
             error_result = self._result_error(f"step execution failed: {exc}")
@@ -177,6 +199,9 @@ class KubeSreGymEnvironment(Environment):
                 done=False,
                 health=health,
                 thought=action.thought,
+                step_success=False,
+                error=str(exc),
+                safety_violation=False,
             )
 
     def _check_cluster_connectivity(self) -> KubectlResult:
@@ -273,12 +298,16 @@ spec:
                 return
             time.sleep(1)
 
-    def _dispatch_tool(self, action: KubeSreGymAction) -> Tuple[KubectlResult, float]:
+    def _dispatch_tool(self, action: KubeSreGymAction) -> Tuple[KubectlResult, float, bool, Optional[str]]:
         tool = (action.tool or "").strip()
         args = action.args or {}
 
         if tool not in self.ALLOWED_TOOLS:
-            return self._result_error("unsupported tool", [tool]), 0.0
+            return self._result_error("unsupported tool", [tool]), 0.0, False, "unsupported tool"
+
+        is_valid, validation_error = self._validate_tool_args(tool, args)
+        if not is_valid:
+            return self._result_error(validation_error or "invalid arguments", [tool]), 0.0, False, validation_error
 
         if tool == "kubectl_get":
             return (
@@ -289,6 +318,8 @@ spec:
                     summary=bool(args.get("summary", True)),
                 ),
                 0.0,
+                False,
+                None,
             )
 
         if tool == "kubectl_describe":
@@ -298,6 +329,8 @@ spec:
                     name=str(args.get("name", "")),
                 ),
                 0.0,
+                False,
+                None,
             )
 
         if tool == "kubectl_logs":
@@ -308,10 +341,12 @@ spec:
                     tail=int(args.get("tail", 200)),
                 ),
                 0.0,
+                False,
+                None,
             )
 
         if tool == "kubectl_events":
-            return self._tools.events(limit=int(args.get("limit", 20))), 0.0
+            return self._tools.events(limit=int(args.get("limit", 20))), 0.0, False, None
 
         if tool == "kubectl_patch":
             return (
@@ -322,20 +357,69 @@ spec:
                     patch_type=str(args.get("patch_type", "merge")),
                 ),
                 0.0,
+                False,
+                None,
             )
 
         if tool == "kubectl_apply_yaml":
-            return self._tools.apply_yaml(str(args.get("yaml", ""))), 0.0
+            yaml_payload = str(args.get("yaml", ""))
+            safety_violation = "delete namespace" in yaml_payload.lower()
+            penalty = -0.25 if safety_violation else 0.0
+            if safety_violation:
+                self._safety_violations += 1
+            return self._tools.apply_yaml(yaml_payload), penalty, safety_violation, None
 
         if tool == "kubectl_delete_pod":
             pod_name = str(args.get("pod", ""))
             penalty = self._danger_penalty_for_delete(pod_name)
-            return self._tools.delete_pod(pod_name), penalty
+            return self._tools.delete_pod(pod_name), penalty, penalty < -0.01, None
 
         if tool == "kubectl_rollout_undo":
-            return self._tools.rollout_undo(str(args.get("deployment", ""))), 0.0
+            return self._tools.rollout_undo(str(args.get("deployment", ""))), 0.0, False, None
 
-        return self._tools.exec(pod=str(args.get("pod", "")), command=str(args.get("command", ""))), 0.0
+        exec_result = self._tools.exec(pod=str(args.get("pod", "")), command=str(args.get("command", "")))
+        safety_violation = not exec_result.ok and "safety policy" in (exec_result.stderr or "").lower()
+        if safety_violation:
+            self._safety_violations += 1
+        return exec_result, (-0.30 if safety_violation else 0.0), safety_violation, (exec_result.stderr if not exec_result.ok else None)
+
+    def _validate_tool_args(self, tool: str, args: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        schema = self.TOOL_SCHEMAS.get(tool)
+        if schema is None:
+            return False, f"no schema registered for tool '{tool}'"
+
+        required = set(schema.get("required", []))
+        optional = set(schema.get("optional", []))
+        allowed = required | optional
+        provided = set(args.keys())
+
+        missing = sorted(required - provided)
+        unknown = sorted(provided - allowed)
+        if missing:
+            return False, f"missing required args for {tool}: {', '.join(missing)}"
+        if unknown:
+            return False, f"unknown args for {tool}: {', '.join(unknown)}"
+
+        type_expectations: Dict[str, type] = {
+            "summary": bool,
+            "limit": int,
+            "tail": int,
+            "resource": str,
+            "name": str,
+            "selector": str,
+            "patch": str,
+            "patch_type": str,
+            "yaml": str,
+            "pod": str,
+            "deployment": str,
+            "command": str,
+            "container": str,
+        }
+        for key, value in args.items():
+            expected = type_expectations.get(key)
+            if expected is not None and not isinstance(value, expected):
+                return False, f"invalid type for '{key}' in {tool}: expected {expected.__name__}"
+        return True, None
 
     def _danger_penalty_for_delete(self, pod_name: str) -> float:
         if pod_name.startswith("coredns") or pod_name.startswith("kube-"):
@@ -374,8 +458,12 @@ spec:
         events_result = self._tools.events(limit=10)
         recent_events = ((events_result.parsed or {}).get("events") if events_result.ok else []) or []
 
+        service_result = self._tools.get_services_summary()
+        services = ((service_result.parsed or {}).get("services") if service_result.ok else []) or []
+
         health = {
-            "pod_summaries": pod_summaries,
+            "pods": pod_summaries,
+            "services": services,
             "recent_events": recent_events,
             "running_pods": running_pods,
             "total_pods": total_pods,
@@ -393,6 +481,9 @@ spec:
         done: bool,
         health: Optional[Dict[str, Any]] = None,
         thought: str = "",
+        step_success: bool = True,
+        error: Optional[str] = None,
+        safety_violation: bool = False,
     ) -> KubeSreGymObservation:
         health = health or self._collect_health()
         self._last_health = {
@@ -401,25 +492,51 @@ spec:
             "endpoint_status_code": health["endpoint_status_code"],
         }
 
+        elapsed = max(0.0, time.time() - self._episode_start_time)
+        resolved = self._is_resolved(health)
+        efficiency = 0.0
+        if resolved:
+            efficiency = max(0.0, 1.0 - (self._state.step_count / max(1, self._max_steps)))
+
+        info = {
+            "success": bool(step_success),
+            "error": error,
+            "safety_violation": bool(safety_violation),
+            "metrics": {
+                "total_steps": self._state.step_count,
+                "time_to_recovery": elapsed if resolved else None,
+                "unsafe_actions_count": self._safety_violations,
+                "success_rate": 1.0 if resolved else 0.0,
+                "efficiency_score": round(efficiency, 4),
+            },
+        }
+
+        last_tool = {
+            "stdout": tool_response.stdout,
+            "stderr": tool_response.stderr,
+            "exit_code": tool_response.exit_code,
+            "success": tool_response.ok,
+            "command": " ".join(tool_response.command),
+            "elapsed_ms": tool_response.elapsed_ms,
+        }
+
         return KubeSreGymObservation(
-            phase=phase,
-            tool_result=tool_result,
-            tool_response=tool_response.to_dict(),
-            allowed_tools=self.ALLOWED_TOOLS,
-            namespace=self._namespace,
-            endpoint=f"http://{self._service_name}.{self._namespace}.svc.cluster.local",
-            endpoint_status_code=health["endpoint_status_code"],
-            running_pods=health["running_pods"],
-            total_pods=health["total_pods"],
-            pod_summaries=health["pod_summaries"],
+            pods=health["pods"],
+            services=health["services"],
             recent_events=health["recent_events"],
-            incident=self._incident,
+            endpoint_status=health["endpoint_status_code"],
+            incident_id=self._incident,
             difficulty=self._difficulty,
-            action_count=self._state.step_count,
+            step_count=self._state.step_count,
             safety_violations=self._safety_violations,
+            allowed_tools=self.ALLOWED_TOOLS,
+            last_tool=last_tool,
+            info=info,
             done=done,
             reward=reward,
             metadata={
+                "phase": phase,
+                "tool_result": tool_result,
                 "episode": self._episode,
                 "incident_description": self._incident_description,
                 "thought": thought,
@@ -471,6 +588,9 @@ spec:
             reward += 0.35
 
         reward += safety_penalty * 0.05
+
+        # Efficiency pressure: discourage long trajectories.
+        reward -= min(0.15, self._state.step_count / max(1, self._max_steps) * 0.15)
 
         if done and self._is_resolved(health):
             reward = max(reward, 1.0)

@@ -52,38 +52,40 @@ class KubeSreGymAction(Action):
 
 
 class KubeSreGymObservation(Observation):
-    """Observation from the Kube SRE Gym environment."""
+    """Compact, deterministic observation schema for SRE incident recovery."""
 
-    phase: str = Field(default="OBSERVE", description="Current recommended loop phase.")
-    tool_result: str = Field(default="", description="Compact output from the latest tool call.")
-    tool_response: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Structured tool execution response with stdout/stderr metadata.",
-    )
-    allowed_tools: List[str] = Field(
+    pods: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Whitelisted tools available to the agent.",
+        description="Compact pod status list (name, status, restarts, reason).",
     )
-    namespace: str = Field(default="sre-gym", description="Scenario namespace.")
-    endpoint: str = Field(default="", description="Target service endpoint URL.")
-    endpoint_status_code: Optional[int] = Field(
-        default=None,
-        description="Latest observed endpoint status code.",
-    )
-    running_pods: int = Field(default=0, description="Number of running pods in scenario namespace.")
-    total_pods: int = Field(default=0, description="Total pods in scenario namespace.")
-    pod_summaries: List[Dict[str, Any]] = Field(
+    services: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Compact pod-level health information.",
+        description="Compact service status list.",
     )
     recent_events: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Recent warning and normal events for debugging signals.",
+        description="Recent events in compact form.",
     )
-    incident: str = Field(default="", description="Current injected incident identifier.")
+    endpoint_status: Optional[int] = Field(
+        default=None,
+        description="HTTP-like endpoint status for target service.",
+    )
+    incident_id: str = Field(default="", description="Current deterministic incident identifier.")
     difficulty: str = Field(default="medium", description="Current scenario difficulty.")
-    action_count: int = Field(default=0, description="Actions taken in the current episode.")
-    safety_violations: int = Field(default=0, description="Count of unsafe actions attempted.")
+    step_count: int = Field(default=0, description="Current episode step count.")
+    safety_violations: int = Field(default=0, description="Unsafe action count in current episode.")
+    allowed_tools: List[str] = Field(
+        default_factory=list,
+        description="Whitelisted tool names accepted by step().",
+    )
+    last_tool: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Structured last tool execution output: stdout/stderr/exit_code/success.",
+    )
+    info: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Step-level contract info: success/error/safety_violation/metrics.",
+    )
 
 
 # Task and Grader Definitions

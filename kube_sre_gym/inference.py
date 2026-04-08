@@ -92,9 +92,9 @@ async def _maybe_await(value: Any) -> Any:
 
 
 def _fallback_action(observation: Any) -> Tuple[str, Dict[str, Any]]:
-    incident = getattr(observation, "incident", "") or ""
-    endpoint_status = getattr(observation, "endpoint_status_code", None)
-    pods = getattr(observation, "pod_summaries", []) or []
+    incident = getattr(observation, "incident_id", "") or ""
+    endpoint_status = getattr(observation, "endpoint_status", None)
+    pods = getattr(observation, "pods", []) or []
 
     if endpoint_status == 200:
         return "kubectl_get", {"resource": "pods", "summary": True}
@@ -135,10 +135,9 @@ def choose_action(client: OpenAI, observation: Any, step: int, task_id: str) -> 
     payload = {
         "task_id": task_id,
         "step": step,
-        "incident": getattr(observation, "incident", ""),
-        "phase": getattr(observation, "phase", ""),
-        "endpoint_status_code": getattr(observation, "endpoint_status_code", None),
-        "pod_summaries": (getattr(observation, "pod_summaries", []) or [])[:6],
+        "incident": getattr(observation, "incident_id", ""),
+        "endpoint_status": getattr(observation, "endpoint_status", None),
+        "pods": (getattr(observation, "pods", []) or [])[:6],
         "recent_events": (getattr(observation, "recent_events", []) or [])[:6],
         "allowed_tools": sorted(allowed_tools),
     }
