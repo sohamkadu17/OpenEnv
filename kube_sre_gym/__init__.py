@@ -8,9 +8,12 @@
 
 from .client import KubeSreGymEnv
 from .models import KubeSreGymAction, KubeSreGymObservation
+from .tasks import OPENENV_TASKS, TASK_CATALOG
 
 __all__ = [
     "KubeSreGymAction",
     "KubeSreGymObservation",
     "KubeSreGymEnv",
+    "TASK_CATALOG",
+    "OPENENV_TASKS",
 ]

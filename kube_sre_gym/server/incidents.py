@@ -82,6 +82,18 @@ def inject_cascading_failure(tools: KubectlTooling, deployment: str, service: st
     return result
 
 
+def inject_oom_killed_pod(tools: KubectlTooling, deployment: str, service: str) -> KubectlResult:
+    del service
+    # Keep the scenario realistic: aggressively low memory limits can force
+    # workload instability under traffic and often manifest as OOMKilled.
+    return tools.patch(
+        "deployment",
+        deployment,
+        '{"spec":{"template":{"spec":{"containers":[{"name":"app","resources":{"limits":{"memory":"16Mi"},"requests":{"memory":"16Mi"}}}]}}}}',
+        patch_type="strategic",
+    )
+
+
 class IncidentManager:
     """Deterministic incident selector with difficulty support."""
 
@@ -117,6 +129,12 @@ class IncidentManager:
                 difficulty="hard",
                 description="Multiple interacting issues: broken service selector and readiness probe.",
                 injector=inject_cascading_failure,
+            ),
+            IncidentDefinition(
+                id="oom_killed_pod",
+                difficulty="hard",
+                description="Deployment memory limit is too low and causes OOMKilled instability.",
+                injector=inject_oom_killed_pod,
             ),
         ]
 

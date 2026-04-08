@@ -9,14 +9,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from kube_sre_gym import KubeSreGymAction, KubeSreGymEnv
-from kube_sre_gym.models import TASK_CATALOG, TaskDefinition
+from kube_sre_gym.tasks import SCORE_EPSILON, TASK_CATALOG, TaskDefinition
 from kube_sre_gym.server.kube_sre_gym_environment import KubeSreGymEnvironment
 
 
 TASK_INCIDENT_OVERRIDES = {
-    "task_easy_selector": "broken_service_selector",
-    "task_medium_readiness": "broken_readiness_probe",
-    "task_hard_cascading": "cascading_selector_and_readiness",
+    "task_fix_broken_service_selector": "broken_service_selector",
+    "task_recover_crashloopbackoff_pod": "crash_loop_container",
+    "task_resolve_oomkilled_pod": "oom_killed_pod",
 }
 
 
@@ -62,9 +62,6 @@ def _get_int_env(name: str, default: int) -> int:
 
 MAX_STEPS = _get_int_env("MAX_STEPS", 20)
 MAX_STEPS_HARD = _get_int_env("MAX_STEPS_HARD", 30)
-SCORE_EPSILON = 0.01
-
-
 def clamp_open_unit_interval(value: float) -> float:
     return max(SCORE_EPSILON, min(1.0 - SCORE_EPSILON, float(value)))
 
@@ -204,6 +201,7 @@ async def _run_task_episode(
     use_client: bool,
 ) -> Tuple[bool, int, float, float]:
     rewards: List[float] = []
+    action_history: List[Dict[str, Any]] = []
     steps_taken = 0
     done = False
 
@@ -242,6 +240,7 @@ async def _run_task_episode(
                 {"task_id": task_def.task_id, "tool": tool, "args": args},
                 separators=(",", ":"),
             )
+            action_history.append({"tool": tool, "args": args})
             tool_response = getattr(observation, "tool_response", {}) or {}
             error = tool_response.get("stderr") if not tool_response.get("success", True) else None
             log_step(step, action_str, reward, done, error)
@@ -250,7 +249,19 @@ async def _run_task_episode(
                 break
 
         cumulative_reward = float(sum(rewards))
-        graded_score = float(task_def.grader(observation, done, steps_taken, cumulative_reward))
+        state = {
+            "endpoint_status": getattr(observation, "endpoint_status", None),
+            "running_pods": sum(
+                1
+                for pod in (getattr(observation, "pods", []) or [])
+                if str(pod.get("phase", "")) == "Running" and str(pod.get("ready", "")) == "1/1"
+            ),
+            "total_pods": len(getattr(observation, "pods", []) or []),
+            "no_errors": True,
+            "unsafe_actions": int(getattr(observation, "safety_violations", 0) or 0),
+            "step_count": steps_taken,
+        }
+        graded_score = float(task_def.grader(state, action_history))
         graded_score = clamp_open_unit_interval(graded_score)
         success = graded_score >= 0.7
         return success, steps_taken, graded_score, cumulative_reward

@@ -16,8 +16,10 @@ from openenv.core.env_server.types import State
 
 try:
     from ..models import KubeSreGymAction, KubeSreGymObservation
+    from ..tasks import OPENENV_TASKS, SCORE_EPSILON, TaskDefinition, choose_task
 except ImportError:
     from models import KubeSreGymAction, KubeSreGymObservation
+    from tasks import OPENENV_TASKS, SCORE_EPSILON, TaskDefinition, choose_task
 
 try:
     from .incidents import IncidentManager
@@ -31,6 +33,7 @@ class KubeSreGymEnvironment(Environment):
     """Environment that trains an agent to diagnose and recover Kubernetes failures."""
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
+    TASKS = OPENENV_TASKS
 
     ALLOWED_TOOLS = [
         "kubectl_get",
@@ -63,6 +66,7 @@ class KubeSreGymEnvironment(Environment):
         self._app_name = os.getenv("SRE_GYM_APP_NAME", "sre-app")
         self._service_name = os.getenv("SRE_GYM_SERVICE_NAME", "sre-app")
         self._difficulty = os.getenv("SRE_GYM_DIFFICULTY", "medium").lower()
+        self._task_id_override = os.getenv("SRE_GYM_TASK_ID", "").strip()
         self._seed = int(os.getenv("SRE_GYM_SEED", "42"))
         self._max_steps = int(os.getenv("SRE_GYM_MAX_STEPS", "40"))
         self._incident_id_override = os.getenv("SRE_GYM_INCIDENT_ID", "").strip()
@@ -72,6 +76,7 @@ class KubeSreGymEnvironment(Environment):
 
         self._incident = ""
         self._incident_description = ""
+        self._active_task: Optional[TaskDefinition] = None
         self._action_history: List[Dict[str, Any]] = []
         self._step_logs: List[Dict[str, Any]] = []
         self._safety_violations = 0
@@ -115,10 +120,14 @@ class KubeSreGymEnvironment(Environment):
                 done=False,
             )
 
+        self._active_task = choose_task(self._difficulty, self._episode, task_id=self._task_id_override)
+        task_init = self._active_task.init()
+        self._difficulty = str(task_init.get("difficulty", self._active_task.difficulty)).lower()
+        selected_incident_id = str(task_init.get("incident_id", "") or "")
         incident = self._incident_manager.choose(
             self._difficulty,
             self._episode,
-            incident_id=self._incident_id_override,
+            incident_id=self._incident_id_override or selected_incident_id,
         )
         injection = incident.injector(self._tools, self._app_name, self._service_name)
         self._incident = incident.id
@@ -498,6 +507,8 @@ spec:
         if resolved:
             efficiency = max(0.0, 1.0 - (self._state.step_count / max(1, self._max_steps)))
 
+        task_score = self._grade_active_task(health)
+
         info = {
             "success": bool(step_success),
             "error": error,
@@ -508,6 +519,8 @@ spec:
                 "unsafe_actions_count": self._safety_violations,
                 "success_rate": 1.0 if resolved else 0.0,
                 "efficiency_score": round(efficiency, 4),
+                "task_score": round(task_score, 4),
+                "task_id": (self._active_task.task_id if self._active_task else None),
             },
         }
 
@@ -539,6 +552,8 @@ spec:
                 "tool_result": tool_result,
                 "episode": self._episode,
                 "incident_description": self._incident_description,
+                "task_id": (self._active_task.task_id if self._active_task else None),
+                "task_name": (self._active_task.name if self._active_task else None),
                 "thought": thought,
                 "history_tail": self._action_history[-5:],
                 "step_logs_tail": self._step_logs[-5:],
@@ -598,6 +613,23 @@ spec:
             reward = min(reward, 0.20)
 
         return max(0.0, min(1.0, reward))
+
+    def _grade_active_task(self, health: Dict[str, Any]) -> float:
+        if self._active_task is None:
+            return SCORE_EPSILON
+
+        state = {
+            "endpoint_status": health.get("endpoint_status_code"),
+            "running_pods": health.get("running_pods", 0),
+            "total_pods": health.get("total_pods", 0),
+            "no_errors": True,
+            "unsafe_actions": self._safety_violations,
+            "step_count": self._state.step_count,
+        }
+        try:
+            return float(self._active_task.grader(state, self._action_history))
+        except Exception:
+            return SCORE_EPSILON
 
     def _append_step_log(
         self,
