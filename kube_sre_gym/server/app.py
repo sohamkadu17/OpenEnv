@@ -18,12 +18,15 @@ except Exception as e:  # pragma: no cover
 # Import environment components
 try:
     from ..models import KubeSreGymAction, KubeSreGymObservation
+    from .custom_web_ui import build_custom_gradio_ui
     from .kube_sre_gym_environment import KubeSreGymEnvironment
 except (ImportError, ValueError):
     from models import KubeSreGymAction, KubeSreGymObservation
     try:
+        from custom_web_ui import build_custom_gradio_ui
         from kube_sre_gym_environment import KubeSreGymEnvironment
     except ImportError:
+        from server.custom_web_ui import build_custom_gradio_ui
         from server.kube_sre_gym_environment import KubeSreGymEnvironment
 
 # Enable web UI by default for local development while preserving explicit overrides.
@@ -36,6 +39,7 @@ app = create_app(
     KubeSreGymObservation,
     env_name="kube_sre_gym",
     max_concurrent_envs=1,
+    gradio_builder=build_custom_gradio_ui,
 )
 
 
@@ -47,10 +51,4 @@ def main(host: str = "0.0.0.0", port: int = 8000) -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Kube SRE Gym Server")
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
-    args = parser.parse_args()
-    main(host=args.host, port=args.port)
+    main()

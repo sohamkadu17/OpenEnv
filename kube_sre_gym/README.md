@@ -42,7 +42,7 @@ This environment simulates:
 
 ```bash
 # Build the environment Docker image
-docker build -t kube_sre_gym-env:latest -f server/Dockerfile .
+docker build -t kube_sre_gym-env:latest -f Dockerfile .
 
 # Run the environment server (requires a Kubernetes cluster)
 docker run -it \
@@ -82,8 +82,13 @@ env.close()
 ### Running the Benchmark (All 3 Tasks)
 
 ```bash
-# In-process benchmark
-python -m kube_sre_gym.inference
+# Required credentials and model config
+export API_BASE_URL="https://router.huggingface.co/v1"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+export HF_TOKEN="<your-token>"
+
+# In-process benchmark (script at project root)
+python inference.py
 
 # With Docker environment via HTTP
 ENV_HTTP_URL=http://127.0.0.1:8000 \
@@ -218,7 +223,7 @@ class KubeSreGymObservation:
 ### Docker Build
 
 ```bash
-docker build -t kube_sre_gym-env:latest -f server/Dockerfile .
+docker build -t kube_sre_gym-env:latest -f Dockerfile .
 ```
 
 ### Local Development

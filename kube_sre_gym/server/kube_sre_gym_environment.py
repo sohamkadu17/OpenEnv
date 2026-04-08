@@ -84,7 +84,7 @@ class KubeSreGymEnvironment(Environment):
                 phase="OBSERVE",
                 tool_result="Cluster connectivity check failed.",
                 tool_response=connectivity,
-                reward=-3.0,
+                reward=0.0,
                 done=False,
             )
 
@@ -95,7 +95,7 @@ class KubeSreGymEnvironment(Environment):
                 phase="OBSERVE",
                 tool_result="Scenario setup failed.",
                 tool_response=self._result_error(f"setup error: {exc}"),
-                reward=-3.0,
+                reward=0.0,
                 done=False,
             )
 
@@ -114,12 +114,12 @@ class KubeSreGymEnvironment(Environment):
                 phase="OBSERVE",
                 tool_result="Scenario initialized, but workload is not observable yet.",
                 tool_response=self._result_error("no pods discovered after reset"),
-                reward=-1.0,
+                reward=0.1,
                 done=False,
                 health=self._health_cache,
             )
 
-        reward = 0.5 if injection.ok else -2.0
+        reward = 0.2 if injection.ok else 0.0
         info = f"Scenario initialized with incident: {self._incident}"
         return self._build_observation(
             phase="OBSERVE",
@@ -167,7 +167,7 @@ class KubeSreGymEnvironment(Environment):
         except Exception as exc:
             error_result = self._result_error(f"step execution failed: {exc}")
             health = self._collect_health(use_cache=False)
-            reward = -3.0
+            reward = 0.0
             self._append_step_log(action, error_result, reward, health)
             return self._build_observation(
                 phase="ANALYZE",
@@ -447,11 +447,11 @@ spec:
         done: bool,
         health: Dict[str, Any],
     ) -> float:
-        reward = -0.1
+        reward = 0.05
         if result.ok:
-            reward += 0.15
+            reward += 0.10
         else:
-            reward -= 1.0
+            reward -= 0.15
 
         prev_running = int(self._last_health.get("running_pods") or 0)
         prev_total = int(self._last_health.get("total_pods") or 0)
@@ -463,18 +463,21 @@ spec:
 
         prev_ratio = (prev_running / prev_total) if prev_total else 0.0
         curr_ratio = (curr_running / curr_total) if curr_total else 0.0
+        ratio_delta = max(0.0, curr_ratio - prev_ratio)
 
-        if curr_ratio > prev_ratio:
-            reward += 2.5
+        if ratio_delta > 0:
+            reward += min(0.40, ratio_delta * 0.40)
         if prev_endpoint != 200 and curr_endpoint == 200:
-            reward += 4.0
+            reward += 0.35
 
-        reward += safety_penalty
+        reward += safety_penalty * 0.05
 
         if done and self._is_resolved(health):
-            reward += max(5.0, 20.0 - 0.5 * self._state.step_count)
+            reward = max(reward, 1.0)
+        elif done:
+            reward = min(reward, 0.20)
 
-        return reward
+        return max(0.0, min(1.0, reward))
 
     def _append_step_log(
         self,
