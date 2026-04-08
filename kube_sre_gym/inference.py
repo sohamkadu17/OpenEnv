@@ -43,6 +43,7 @@ load_env_file()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "").strip()
 MODEL_NAME = os.getenv("MODEL_NAME", "").strip()
+API_KEY = os.getenv("API_KEY", "").strip()
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 
 IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
@@ -92,8 +93,8 @@ def validate_prerequisites() -> Tuple[bool, List[str]]:
         issues.append("API_BASE_URL is required")
     if not MODEL_NAME:
         issues.append("MODEL_NAME is required")
-    if not HF_TOKEN:
-        issues.append("HF_TOKEN is required")
+    if not (API_KEY or HF_TOKEN):
+        issues.append("API_KEY or HF_TOKEN is required")
     if IMAGE_NAME is None and not ENV_HTTP_URL:
         issues.append("Set IMAGE_NAME/LOCAL_IMAGE_NAME or ENV_HTTP_URL")
     return len(issues) == 0, issues
@@ -297,9 +298,12 @@ async def run_all_tasks(client: Optional[OpenAI], use_client: bool) -> Tuple[Lis
 
 
 def create_openai_client() -> OpenAI:
+    # Phase-2 validator injects API_KEY; prioritize it to ensure calls are
+    # observed on the official LiteLLM proxy credentials.
+    resolved_api_key = API_KEY or HF_TOKEN
     return OpenAI(
         base_url=API_BASE_URL,
-        api_key=HF_TOKEN,
+        api_key=resolved_api_key,
     )
 
 
