@@ -77,6 +77,7 @@ COPY --from=builder /app/env /app/env
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app/env"
 ENV ENABLE_WEB_INTERFACE=true
+ENV ENV_README_PATH="/app/env/README.md"
 
 # Set PYTHONPATH so imports work correctly
 ENV PYTHONPATH="/app/env:$PYTHONPATH"

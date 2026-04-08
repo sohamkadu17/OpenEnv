@@ -6,8 +6,10 @@
 
 """Data models for the Kube SRE Gym environment."""
 
+import json
+
 from openenv.core.env_server.types import Action, Observation
-from pydantic import Field
+from pydantic import Field, field_validator
 from typing import Any, Callable, Dict, List, Optional
 from dataclasses import dataclass
 
@@ -27,6 +29,26 @@ class KubeSreGymAction(Action):
         default_factory=dict,
         description="Arguments for the selected tool.",
     )
+
+    @field_validator("args", mode="before")
+    @classmethod
+    def parse_args_json(cls, value: Any) -> Dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("args must be a valid JSON object") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("args JSON must decode to an object")
+            return parsed
+        raise ValueError("args must be a dictionary or JSON object string")
 
 
 class KubeSreGymObservation(Observation):
