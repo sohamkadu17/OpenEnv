@@ -29,6 +29,18 @@ TOOL_PRESETS: Dict[str, Dict[str, str]] = {
     },
 }
 
+ALL_ENV_TOOLS = [
+    "kubectl_get",
+    "kubectl_describe",
+    "kubectl_logs",
+    "kubectl_events",
+    "kubectl_patch",
+    "kubectl_apply_yaml",
+    "kubectl_delete_pod",
+    "kubectl_rollout_undo",
+    "kubectl_exec",
+]
+
 
 def _to_json_text(value: Any) -> str:
     try:
@@ -78,7 +90,7 @@ def build_custom_gradio_ui(
                 )
                 tool = gr.Dropdown(
                     label="Tool",
-                    choices=sorted({v["tool"] for v in TOOL_PRESETS.values()}),
+                    choices=ALL_ENV_TOOLS,
                     value="kubectl_get",
                     allow_custom_value=True,
                 )
