@@ -6,3 +6,29 @@ app: server.app:app
 port: 8000
 web_path: /web
 
+difficulties:
+	- easy
+	- medium
+	- hard
+
+max_steps: 30
+
+tasks:
+	- id: task_fix_broken_service_selector
+		description: >
+			Service selector does not match running pod labels. Diagnose service and
+			endpoint state, then patch selector to restore traffic.
+		grader: kube_sre_gym.server.graders.easy_grader
+
+	- id: task_recover_crashloopbackoff_pod
+		description: >
+			Workload enters CrashLoopBackOff due to failing startup behavior.
+			Recover service health via rollout undo or deployment patch.
+		grader: kube_sre_gym.server.graders.medium_grader
+
+	- id: task_resolve_oomkilled_pod
+		description: >
+			Pod is OOMKilled because memory constraints are too strict.
+			Increase memory resources and recover endpoint health.
+		grader: kube_sre_gym.server.graders.hard_grader
+

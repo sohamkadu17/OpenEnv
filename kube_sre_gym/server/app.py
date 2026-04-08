@@ -43,6 +43,34 @@ app = create_app(
 )
 
 
+@app.get("/tasks", tags=["Environment Info"], summary="List all tasks with graders")
+async def list_tasks() -> list[dict[str, str]]:
+    """Return discoverable task metadata used by external validators."""
+    return [
+        {
+            "id": "task_fix_broken_service_selector",
+            "name": "Fix Broken Service Selector",
+            "description": "Fix service selector mismatch and restore endpoint health.",
+            "difficulty": "easy",
+            "grader": "kube_sre_gym.server.graders.easy_grader",
+        },
+        {
+            "id": "task_recover_crashloopbackoff_pod",
+            "name": "Recover CrashLoopBackOff Pod",
+            "description": "Recover crashing workload with rollout undo or patch.",
+            "difficulty": "medium",
+            "grader": "kube_sre_gym.server.graders.medium_grader",
+        },
+        {
+            "id": "task_resolve_oomkilled_pod",
+            "name": "Resolve OOMKilled Pod",
+            "description": "Increase memory resources to recover OOMKilled workload.",
+            "difficulty": "hard",
+            "grader": "kube_sre_gym.server.graders.hard_grader",
+        },
+    ]
+
+
 def main(host: str = "0.0.0.0", port: int = 8000) -> None:
     """Run the FastAPI server."""
     import uvicorn
