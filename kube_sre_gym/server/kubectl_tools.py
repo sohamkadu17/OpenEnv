@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -48,6 +49,21 @@ class KubectlTooling:
     def __init__(self, namespace: str, timeout_seconds: int = 45):
         self.namespace = namespace
         self.timeout_seconds = timeout_seconds
+        # Auto-enable mock mode on Hugging Face Spaces unless explicitly disabled.
+        mock_env = os.getenv("SRE_GYM_MOCK_MODE", "").strip().lower()
+        if mock_env in {"1", "true", "yes", "on"}:
+            self.mock_mode = True
+        elif mock_env in {"0", "false", "no", "off"}:
+            self.mock_mode = False
+        else:
+            self.mock_mode = bool(os.getenv("SPACE_ID"))
+
+        self._mock_state = {
+            "selector_ok": True,
+            "readiness_ok": True,
+            "image_ok": True,
+            "crash_loop": False,
+        }
 
     def get(self, resource: str, name: Optional[str] = None, selector: Optional[str] = None, summary: bool = True) -> KubectlResult:
         if resource == "pods" and summary:
@@ -256,6 +272,9 @@ class KubectlTooling:
         )
 
     def _run(self, command: List[str]) -> KubectlResult:
+        if self.mock_mode:
+            return self._run_mock(command)
+
         start = time.time()
         try:
             proc = subprocess.run(
@@ -297,6 +316,159 @@ class KubectlTooling:
                 elapsed_ms=elapsed_ms,
                 parsed={},
             )
+
+    def _run_mock(self, command: List[str]) -> KubectlResult:
+        start = time.time()
+
+        def _result(ok: bool, stdout: str = "", stderr: str = "", exit_code: int = 0, parsed: Optional[Dict] = None) -> KubectlResult:
+            return KubectlResult(
+                ok=ok,
+                command=command,
+                exit_code=0 if ok else exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                elapsed_ms=int((time.time() - start) * 1000),
+                parsed=parsed or {},
+            )
+
+        joined = " ".join(command)
+        if command[:2] == ["kubectl", "cluster-info"]:
+            return _result(True, stdout="Kubernetes control plane is running (mock)")
+
+        if command[:2] == ["kubectl", "apply"]:
+            # Applying baseline manifests resets healthy state before incident injection.
+            self._mock_state.update(
+                {
+                    "selector_ok": True,
+                    "readiness_ok": True,
+                    "image_ok": True,
+                    "crash_loop": False,
+                }
+            )
+            return _result(True, stdout="resources configured (mock)")
+
+        if len(command) >= 3 and command[1] == "delete":
+            return _result(True, stdout="deleted (mock)")
+
+        if command[:2] == ["kubectl", "rollout"] and len(command) >= 3 and command[2] == "undo":
+            self._mock_state.update(
+                {
+                    "selector_ok": True,
+                    "readiness_ok": True,
+                    "image_ok": True,
+                    "crash_loop": False,
+                }
+            )
+            return _result(True, stdout="deployment rolled back (mock)")
+
+        if command[:2] == ["kubectl", "patch"] and len(command) >= 4:
+            resource = command[2]
+            patch_payload = command[-1] if command else ""
+
+            if resource == "service":
+                if "does-not-exist" in patch_payload:
+                    self._mock_state["selector_ok"] = False
+                if '"app":"sre-app"' in patch_payload:
+                    self._mock_state["selector_ok"] = True
+
+            if resource == "deployment":
+                if "invalid-tag" in patch_payload:
+                    self._mock_state["image_ok"] = False
+                if "/non-existent" in patch_payload:
+                    self._mock_state["readiness_ok"] = False
+                if "exit 1" in patch_payload:
+                    self._mock_state["crash_loop"] = True
+
+                # Best-effort positive remediations.
+                if '"image":"nginx:1.27"' in patch_payload:
+                    self._mock_state["image_ok"] = True
+                if '"path":"/"' in patch_payload or '"path":"/index.html"' in patch_payload:
+                    self._mock_state["readiness_ok"] = True
+                if "readinessProbe" not in patch_payload and "command" in patch_payload and "exit 1" not in patch_payload:
+                    self._mock_state["crash_loop"] = False
+
+            return _result(True, stdout="patched (mock)")
+
+        if command[:3] == ["kubectl", "get", "pods"] and "-o" in command and "json" in command:
+            running = self._mock_state["image_ok"] and not self._mock_state["crash_loop"]
+            ready = running and self._mock_state["readiness_ok"]
+
+            reason = ""
+            phase = "Running"
+            if not self._mock_state["image_ok"]:
+                reason = "ErrImagePull"
+                phase = "Pending"
+            elif self._mock_state["crash_loop"]:
+                reason = "CrashLoopBackOff"
+                phase = "Running"
+            elif running and not ready:
+                reason = "ReadinessFailed"
+
+            payload = {
+                "items": [
+                    {
+                        "metadata": {"name": "sre-app-7f9d9f8b7d-abcde"},
+                        "status": {
+                            "phase": phase,
+                            "reason": reason,
+                            "containerStatuses": [
+                                {
+                                    "ready": bool(ready),
+                                    "restartCount": 2 if self._mock_state["crash_loop"] else 0,
+                                    "state": {
+                                        "waiting": {"reason": reason} if reason in {"ErrImagePull", "CrashLoopBackOff"} else {},
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+            return _result(True, stdout=json.dumps(payload), parsed=payload)
+
+        if command[:3] == ["kubectl", "get", "events"] and "-o" in command and "json" in command:
+            warning = None
+            if not self._mock_state["image_ok"]:
+                warning = "Failed to pull image"
+            elif self._mock_state["crash_loop"]:
+                warning = "Back-off restarting failed container"
+            elif not self._mock_state["readiness_ok"]:
+                warning = "Readiness probe failed"
+
+            items = []
+            if warning:
+                items.append(
+                    {
+                        "type": "Warning",
+                        "reason": "Unhealthy",
+                        "message": warning,
+                        "count": 1,
+                        "involvedObject": {"name": "sre-app-7f9d9f8b7d-abcde"},
+                        "lastTimestamp": "2026-01-01T00:00:00Z",
+                    }
+                )
+            payload = {"items": items}
+            return _result(True, stdout=json.dumps(payload), parsed=payload)
+
+        if command[:3] == ["kubectl", "get", "endpoints"]:
+            endpoint_ok = (
+                self._mock_state["selector_ok"]
+                and self._mock_state["image_ok"]
+                and not self._mock_state["crash_loop"]
+                and self._mock_state["readiness_ok"]
+            )
+            return _result(True, stdout="10.0.0.10" if endpoint_ok else "")
+
+        if command[:2] == ["kubectl", "describe"]:
+            return _result(True, stdout=f"describe output (mock): {joined}")
+
+        if command[:2] == ["kubectl", "logs"]:
+            return _result(True, stdout="mock logs: application output")
+
+        if command[:2] == ["kubectl", "exec"]:
+            return _result(True, stdout="mock exec completed")
+
+        return _result(False, stderr=f"unsupported mock kubectl command: {joined}", exit_code=1)
 
     @staticmethod
     def _truncate(text: str, limit: int = 8000) -> str:

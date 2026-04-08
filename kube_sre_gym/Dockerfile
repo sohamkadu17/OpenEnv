@@ -59,6 +59,14 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
+# Install kubectl in runtime image for real-cluster mode.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)" && \
+    curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl && \
+    chmod +x /usr/local/bin/kubectl && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy the virtual environment from builder
 COPY --from=builder /app/env/.venv /app/.venv
 
