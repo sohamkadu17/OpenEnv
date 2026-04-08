@@ -205,7 +205,7 @@ async def _run_task_episode(
     max_steps: int,
     client: Optional[OpenAI],
     use_client: bool,
-) -> Tuple[bool, int, float, float]:
+) -> Tuple[bool, int, float, float, List[float]]:
     rewards: List[float] = []
     steps_taken = 0
     done = False
@@ -256,7 +256,7 @@ async def _run_task_episode(
         graded_score = float(task_def.grader(observation, done, steps_taken, cumulative_reward))
         graded_score = clamp_open_unit_interval(graded_score)
         success = graded_score >= 0.7
-        return success, steps_taken, graded_score, cumulative_reward
+        return success, steps_taken, graded_score, cumulative_reward, rewards
     finally:
         try:
             await _maybe_await(env.close())
@@ -270,8 +270,9 @@ async def run_all_tasks(client: Optional[OpenAI], use_client: bool) -> Tuple[Lis
 
     for task_def in TASK_CATALOG:
         max_steps = MAX_STEPS if task_def.difficulty != "hard" else MAX_STEPS_HARD
+        log_start(task=task_def.task_id, env=BENCHMARK, model=MODEL_NAME)
         try:
-            success, steps, graded_score, cumulative_reward = await _run_task_episode(
+            success, steps, graded_score, cumulative_reward, reward_trace = await _run_task_episode(
                 task_def,
                 max_steps,
                 client,
@@ -279,7 +280,13 @@ async def run_all_tasks(client: Optional[OpenAI], use_client: bool) -> Tuple[Lis
             )
         except Exception:
             # Keep benchmark running task-by-task even if one episode fails hard.
-            success, steps, graded_score, cumulative_reward = False, 0, SCORE_EPSILON, 0.0
+            success, steps, graded_score, cumulative_reward, reward_trace = False, 0, SCORE_EPSILON, 0.0, []
+        log_end(
+            success=success,
+            steps=steps,
+            score=float(graded_score),
+            rewards=reward_trace,
+        )
         total_steps += steps
         per_task_results.append(
             {
@@ -350,8 +357,6 @@ async def main() -> None:
     overall_success = False
     total_steps = 0
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
-
     if ok:
         try:
             client = create_openai_client()
@@ -386,13 +391,7 @@ async def main() -> None:
             )
             overall_success = False
             total_steps = 0
-        reward_trace = [float(x["graded_score"]) for x in task_results]
-        log_end(
-            success=overall_success,
-            steps=total_steps,
-            score=float(aggregate_score),
-            rewards=reward_trace,
-        )
+        # Per-task [START]/[STEP]/[END] logs are emitted in run_all_tasks().
 
 
 if __name__ == "__main__":
