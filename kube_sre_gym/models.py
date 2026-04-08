@@ -103,16 +103,24 @@ class TaskDefinition:
     grader: Callable[["KubeSreGymObservation", bool, int, float], float]
 
 
+SCORE_EPSILON = 0.01
+
+
+def _clamp_open_unit_interval(value: float) -> float:
+    return max(SCORE_EPSILON, min(1.0 - SCORE_EPSILON, float(value)))
+
+
 def grade_easy_task(obs: "KubeSreGymObservation", done: bool, steps: int, cumulative_reward: float) -> float:
     """
     Grade easy tasks: single-incident recovery.
     Scoring: 1.0 if resolved, 0.0 otherwise, with step efficiency bonus.
     """
     if not done:
-        return 0.0
+        partial = min(0.35, max(0.05, cumulative_reward / 25.0))
+        return _clamp_open_unit_interval(partial)
     # Reward efficient solutions: max 1.0 at step <= 5, linear decay to 0.7 at step 15
     efficiency_bonus = max(0.7, 1.0 - (steps - 5) * 0.03)
-    return min(1.0, efficiency_bonus)
+    return _clamp_open_unit_interval(efficiency_bonus)
 
 
 def grade_medium_task(obs: "KubeSreGymObservation", done: bool, steps: int, cumulative_reward: float) -> float:
@@ -122,7 +130,8 @@ def grade_medium_task(obs: "KubeSreGymObservation", done: bool, steps: int, cumu
     """
     if not done:
         # Partial credit for good reasoning (positive cumulative reward)
-        return min(0.4, max(0.0, cumulative_reward / 20.0))
+        partial = min(0.4, max(0.05, cumulative_reward / 20.0))
+        return _clamp_open_unit_interval(partial)
     
     # Safety bonus: reward fewer violations
     safety_multiplier = 1.0 - (obs.safety_violations * 0.1)
@@ -130,7 +139,7 @@ def grade_medium_task(obs: "KubeSreGymObservation", done: bool, steps: int, cumu
     # Efficiency: best at step <= 8, decay to 0.6 at step 20
     efficiency_bonus = max(0.6, 1.0 - (steps - 8) * 0.025)
     
-    return min(1.0, 0.8 * efficiency_bonus * safety_multiplier)
+    return _clamp_open_unit_interval(0.8 * efficiency_bonus * safety_multiplier)
 
 
 def grade_hard_task(obs: "KubeSreGymObservation", done: bool, steps: int, cumulative_reward: float) -> float:
@@ -140,18 +149,19 @@ def grade_hard_task(obs: "KubeSreGymObservation", done: bool, steps: int, cumula
     """
     if not done:
         # Partial credit for good approach
-        return min(0.2, max(0.0, cumulative_reward / 30.0))
+        partial = min(0.2, max(0.05, cumulative_reward / 30.0))
+        return _clamp_open_unit_interval(partial)
     
     # Strict safety requirements on hard tasks
     if obs.safety_violations > 2:
-        return 0.4  # Security violations heavily penalized
+        return _clamp_open_unit_interval(0.4)  # Security violations heavily penalized
     
     safety_multiplier = 1.0 - (obs.safety_violations * 0.15)
     
     # Efficiency: best at step <= 12, decay to 0.5 at step 25
     efficiency_bonus = max(0.5, 1.0 - (steps - 12) * 0.02)
     
-    return min(1.0, 0.6 * efficiency_bonus * safety_multiplier)
+    return _clamp_open_unit_interval(0.6 * efficiency_bonus * safety_multiplier)
 
 
 # Predefined Task Catalog

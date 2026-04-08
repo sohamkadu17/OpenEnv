@@ -62,6 +62,11 @@ def _get_int_env(name: str, default: int) -> int:
 
 MAX_STEPS = _get_int_env("MAX_STEPS", 20)
 MAX_STEPS_HARD = _get_int_env("MAX_STEPS_HARD", 30)
+SCORE_EPSILON = 0.01
+
+
+def clamp_open_unit_interval(value: float) -> float:
+    return max(SCORE_EPSILON, min(1.0 - SCORE_EPSILON, float(value)))
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -246,7 +251,7 @@ async def _run_task_episode(
 
         cumulative_reward = float(sum(rewards))
         graded_score = float(task_def.grader(observation, done, steps_taken, cumulative_reward))
-        graded_score = max(0.0, min(1.0, graded_score))
+        graded_score = clamp_open_unit_interval(graded_score)
         success = graded_score >= 0.7
         return success, steps_taken, graded_score, cumulative_reward
     finally:
@@ -271,7 +276,7 @@ async def run_all_tasks(client: Optional[OpenAI], use_client: bool) -> Tuple[Lis
             )
         except Exception:
             # Keep benchmark running task-by-task even if one episode fails hard.
-            success, steps, graded_score, cumulative_reward = False, 0, 0.0, 0.0
+            success, steps, graded_score, cumulative_reward = False, 0, SCORE_EPSILON, 0.0
         total_steps += steps
         per_task_results.append(
             {
