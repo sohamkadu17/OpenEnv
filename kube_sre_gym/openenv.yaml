@@ -19,19 +19,19 @@ tasks:
       Service selector does not match running pod labels. Diagnose service and
       endpoint state, then patch selector to restore traffic. Expected recovery
       action includes kubectl_patch on Service selector fields.
-    grader: server.graders.task_fix_broken_service_selector_grader
+    grader: tasks.task_fix_broken_service_selector_grader
 
   - id: task_recover_crashloopbackoff_pod
     description: >
       Workload enters CrashLoopBackOff due to failing startup behavior.
       Recover service health via rollout undo or deployment patch.
       Expected recovery action includes kubectl_rollout_undo or deployment patch.
-    grader: server.graders.task_recover_crashloopbackoff_pod_grader
+    grader: tasks.task_recover_crashloopbackoff_pod_grader
 
   - id: task_resolve_oomkilled_pod
     description: >
       Pod is OOMKilled because memory constraints are too strict.
       Increase memory resources and recover endpoint health.
       Expected recovery action includes kubectl_patch with memory resources.
-    grader: server.graders.task_resolve_oomkilled_pod_grader
+    grader: tasks.task_resolve_oomkilled_pod_grader
 

@@ -52,21 +52,21 @@ async def list_tasks() -> list[dict[str, str]]:
             "name": "Fix Broken Service Selector",
             "description": "Fix service selector mismatch and restore endpoint health.",
             "difficulty": "easy",
-            "grader": "server.graders.task_fix_broken_service_selector_grader",
+            "grader": "tasks.task_fix_broken_service_selector_grader",
         },
         {
             "id": "task_recover_crashloopbackoff_pod",
             "name": "Recover CrashLoopBackOff Pod",
             "description": "Recover crashing workload with rollout undo or patch.",
             "difficulty": "medium",
-            "grader": "server.graders.task_recover_crashloopbackoff_pod_grader",
+            "grader": "tasks.task_recover_crashloopbackoff_pod_grader",
         },
         {
             "id": "task_resolve_oomkilled_pod",
             "name": "Resolve OOMKilled Pod",
             "description": "Increase memory resources to recover OOMKilled workload.",
             "difficulty": "hard",
-            "grader": "server.graders.task_resolve_oomkilled_pod_grader",
+            "grader": "tasks.task_resolve_oomkilled_pod_grader",
         },
     ]
 
