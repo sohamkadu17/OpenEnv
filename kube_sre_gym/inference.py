@@ -9,6 +9,25 @@ from typing import Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from kube_sre_gym import KubeSreGymAction, KubeSreGymEnv
+from kube_sre_gym.server.kube_sre_gym_environment import KubeSreGymEnvironment
+
+
+def load_env_file(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+load_env_file()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
@@ -87,13 +106,14 @@ def _fallback_action(observation) -> Tuple[str, Dict]:
 
 
 def choose_action(client: OpenAI, observation, step: int) -> Tuple[str, Dict]:
+    allowed_tools = set(getattr(observation, "allowed_tools", []) or [])
     payload = {
         "step": step,
         "incident": getattr(observation, "incident", ""),
         "endpoint_status_code": getattr(observation, "endpoint_status_code", None),
         "pod_summaries": (getattr(observation, "pod_summaries", []) or [])[:5],
         "recent_events": (getattr(observation, "recent_events", []) or [])[:5],
-        "allowed_tools": getattr(observation, "allowed_tools", []),
+        "allowed_tools": sorted(allowed_tools),
     }
     try:
         completion = client.chat.completions.create(
@@ -118,7 +138,7 @@ def choose_action(client: OpenAI, observation, step: int) -> Tuple[str, Dict]:
         data = json.loads(raw)
         tool = str(data.get("tool", "")).strip()
         args = data.get("args", {})
-        if not tool or not isinstance(args, dict):
+        if not tool or not isinstance(args, dict) or (allowed_tools and tool not in allowed_tools):
             return _fallback_action(observation)
         return tool, args
     except Exception:
@@ -142,7 +162,10 @@ async def run_episode() -> Tuple[bool, int, float, List[float]]:
         for step in range(1, MAX_STEPS + 1):
             tool, args = choose_action(client, result.observation, step)
             action = KubeSreGymAction(thought="llm-policy", tool=tool, args=args)
-            result = await _maybe_await(env.step(action))
+            try:
+                result = await _maybe_await(env.step(action))
+            except Exception as exc:
+                raise RuntimeError(f"client step failed: {exc}") from exc
 
             reward = float(result.reward or 0.0)
             done = bool(result.done)
@@ -167,6 +190,36 @@ async def run_episode() -> Tuple[bool, int, float, List[float]]:
             pass
 
 
+def run_inprocess_episode(client: OpenAI) -> Tuple[bool, int, float, List[float]]:
+    env = KubeSreGymEnvironment()
+    rewards: List[float] = []
+    steps_taken = 0
+    done = False
+
+    observation = env.reset()
+    for step in range(1, MAX_STEPS + 1):
+        tool, args = choose_action(client, observation, step)
+        action = KubeSreGymAction(thought="llm-policy", tool=tool, args=args)
+        observation = env.step(action)
+
+        reward = float(observation.reward or 0.0)
+        done = bool(observation.done)
+        rewards.append(reward)
+        steps_taken = step
+
+        action_str = json.dumps({"tool": tool, "args": args}, separators=(",", ":"))
+        tool_response = getattr(observation, "tool_response", {}) or {}
+        error = tool_response.get("stderr") if not tool_response.get("success", True) else None
+        log_step(step, action_str, reward, done, error)
+
+        if done:
+            break
+
+    score = 1.0 if done else min(max(sum(rewards) / 20.0, 0.0), 1.0)
+    success = score >= SUCCESS_SCORE_THRESHOLD or done
+    return success, steps_taken, score, rewards
+
+
 async def main() -> None:
     ok, issues = validate_prerequisites()
     if not ok:
@@ -177,8 +230,11 @@ async def main() -> None:
     steps_taken = 0
     score = 0.0
     rewards: List[float] = []
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     try:
         success, steps_taken, score, rewards = await run_episode()
+    except Exception:
+        success, steps_taken, score, rewards = run_inprocess_episode(client)
     finally:
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
