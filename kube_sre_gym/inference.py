@@ -314,7 +314,13 @@ async def main() -> None:
 
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
     if issues:
-        print(f"[WARN] {'; '.join(issues)}", flush=True)
+        log_step(
+            0,
+            json.dumps({"task_id": "init", "tool": "precheck", "args": {}}, separators=(",", ":")),
+            0.0,
+            False,
+            "; ".join(issues),
+        )
 
     try:
         task_results, aggregate_score, overall_success, total_steps = await run_all_tasks(
@@ -322,14 +328,26 @@ async def main() -> None:
             use_client=True,
         )
     except Exception as remote_exc:
-        print(f"[WARN] remote_mode_failed: {remote_exc}", flush=True)
+        log_step(
+            0,
+            json.dumps({"task_id": "runtime", "tool": "remote_mode", "args": {}}, separators=(",", ":")),
+            0.0,
+            False,
+            f"remote_mode_failed: {remote_exc}",
+        )
         try:
             task_results, aggregate_score, overall_success, total_steps = await run_all_tasks(
                 client,
                 use_client=False,
             )
         except Exception as local_exc:
-            print(f"[WARN] local_mode_failed: {local_exc}", flush=True)
+            log_step(
+                0,
+                json.dumps({"task_id": "runtime", "tool": "local_mode", "args": {}}, separators=(",", ":")),
+                0.0,
+                False,
+                f"local_mode_failed: {local_exc}",
+            )
             task_results, aggregate_score, overall_success, total_steps = [], 0.0, False, 0
 
     reward_trace = [float(x["graded_score"]) for x in task_results]
@@ -345,5 +363,11 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as exc:
-        print(f"[FATAL] unhandled_inference_exception: {exc}", flush=True)
+        log_step(
+            0,
+            json.dumps({"task_id": "fatal", "tool": "exception", "args": {}}, separators=(",", ":")),
+            0.0,
+            False,
+            f"unhandled_inference_exception: {exc}",
+        )
         log_end(success=False, steps=0, score=0.0, rewards=[])
