@@ -88,6 +88,38 @@ def grade_resolve_oomkilled_pod(state: Dict[str, Any], history: List[Dict[str, A
     return _clamp_open_unit_interval(score)
 
 
+def _normalize_observation(observation: Any) -> Dict[str, Any]:
+    if isinstance(observation, dict):
+        return observation
+
+    pods = getattr(observation, "pods", []) or []
+    running = sum(
+        1
+        for pod in pods
+        if str(pod.get("phase", "")) == "Running" and str(pod.get("ready", "")) == "1/1"
+    )
+    return {
+        "endpoint_status": getattr(observation, "endpoint_status", None),
+        "running_pods": running,
+        "total_pods": len(pods),
+        "unsafe_actions": int(getattr(observation, "safety_violations", 0) or 0),
+        "step_count": int(getattr(observation, "step_count", 0) or 0),
+        "no_errors": True,
+    }
+
+
+def task_fix_broken_service_selector_grader(observation: Any, history: List[Dict[str, Any]] | None = None) -> float:
+    return grade_fix_broken_service_selector(_normalize_observation(observation), history or [])
+
+
+def task_recover_crashloopbackoff_pod_grader(observation: Any, history: List[Dict[str, Any]] | None = None) -> float:
+    return grade_recover_crashloopbackoff_pod(_normalize_observation(observation), history or [])
+
+
+def task_resolve_oomkilled_pod_grader(observation: Any, history: List[Dict[str, Any]] | None = None) -> float:
+    return grade_resolve_oomkilled_pod(_normalize_observation(observation), history or [])
+
+
 @dataclass(frozen=True)
 class TaskDefinition:
     task_id: str
@@ -137,6 +169,33 @@ OPENENV_TASKS: List[Dict[str, Any]] = [
     }
     for task in TASK_CATALOG
 ]
+
+
+SIMPLE_TASKS: List[Dict[str, Any]] = [
+    {
+        "id": "task_fix_broken_service_selector",
+        "description": "Fix service selector mismatch by patching Service selector labels.",
+        "difficulty": "easy",
+        "grader": task_fix_broken_service_selector_grader,
+    },
+    {
+        "id": "task_recover_crashloopbackoff_pod",
+        "description": "Recover CrashLoopBackOff pod via rollout undo or deployment patch.",
+        "difficulty": "medium",
+        "grader": task_recover_crashloopbackoff_pod_grader,
+    },
+    {
+        "id": "task_resolve_oomkilled_pod",
+        "description": "Resolve OOMKilled pod by increasing memory resources.",
+        "difficulty": "hard",
+        "grader": task_resolve_oomkilled_pod_grader,
+    },
+]
+
+
+def get_tasks() -> List[Dict[str, Any]]:
+    """Return plain task dictionaries for validator discovery."""
+    return [dict(task) for task in SIMPLE_TASKS]
 
 
 def choose_task(difficulty: str, episode: int, task_id: str = "") -> TaskDefinition:

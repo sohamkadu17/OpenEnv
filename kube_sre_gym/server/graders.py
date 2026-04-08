@@ -38,6 +38,23 @@ def _extract_history(trajectory: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
+def _coerce_trajectory(observation: Any, history: List[Dict[str, Any]] | None = None) -> Dict[str, Any]:
+    # Accept either trajectory dict or (observation/state, history).
+    if isinstance(observation, dict):
+        data = dict(observation)
+    else:
+        data = {
+            "endpoint_status": getattr(observation, "endpoint_status", None),
+            "running_pods": getattr(observation, "running_pods", 0),
+            "safety_violations": getattr(observation, "safety_violations", 0),
+            "steps": getattr(observation, "step_count", 0),
+            "max_steps": getattr(observation, "max_steps", 30),
+        }
+    if history is not None and isinstance(history, list):
+        data.setdefault("history", history)
+    return data
+
+
 def _trajectory_score(trajectory: Dict[str, Any], base_shift: float, unsafe_penalty: float) -> float:
     rewards = trajectory.get("rewards") or trajectory.get("reward_trace") or []
     score = _normalized_reward_score(rewards)
@@ -73,8 +90,11 @@ def _has_memory_patch(history: List[Dict[str, Any]]) -> bool:
     return False
 
 
-def task_fix_broken_service_selector_grader(trajectory: Dict[str, Any] | None = None) -> float:
-    data = trajectory or {}
+def task_fix_broken_service_selector_grader(
+    observation: Dict[str, Any] | Any | None = None,
+    history: List[Dict[str, Any]] | None = None,
+) -> float:
+    data = _coerce_trajectory(observation or {}, history)
     history = _extract_history(data)
     score = _trajectory_score(data, base_shift=0.05, unsafe_penalty=0.04)
 
@@ -88,8 +108,11 @@ def task_fix_broken_service_selector_grader(trajectory: Dict[str, Any] | None = 
     return _clamp_open_unit_interval(score)
 
 
-def task_recover_crashloopbackoff_pod_grader(trajectory: Dict[str, Any] | None = None) -> float:
-    data = trajectory or {}
+def task_recover_crashloopbackoff_pod_grader(
+    observation: Dict[str, Any] | Any | None = None,
+    history: List[Dict[str, Any]] | None = None,
+) -> float:
+    data = _coerce_trajectory(observation or {}, history)
     history = _extract_history(data)
     score = _trajectory_score(data, base_shift=0.04, unsafe_penalty=0.05)
 
@@ -107,8 +130,11 @@ def task_recover_crashloopbackoff_pod_grader(trajectory: Dict[str, Any] | None =
     return _clamp_open_unit_interval(score)
 
 
-def task_resolve_oomkilled_pod_grader(trajectory: Dict[str, Any] | None = None) -> float:
-    data = trajectory or {}
+def task_resolve_oomkilled_pod_grader(
+    observation: Dict[str, Any] | Any | None = None,
+    history: List[Dict[str, Any]] | None = None,
+) -> float:
+    data = _coerce_trajectory(observation or {}, history)
     history = _extract_history(data)
     score = _trajectory_score(data, base_shift=0.02, unsafe_penalty=0.06)
 
@@ -124,12 +150,12 @@ def task_resolve_oomkilled_pod_grader(trajectory: Dict[str, Any] | None = None) 
 
 # Backward-compatible aliases (difficulty-based naming)
 def easy_grader(trajectory: Dict[str, Any] | None = None) -> float:
-    return task_fix_broken_service_selector_grader(trajectory)
+    return task_fix_broken_service_selector_grader(trajectory, None)
 
 
 def medium_grader(trajectory: Dict[str, Any] | None = None) -> float:
-    return task_recover_crashloopbackoff_pod_grader(trajectory)
+    return task_recover_crashloopbackoff_pod_grader(trajectory, None)
 
 
 def hard_grader(trajectory: Dict[str, Any] | None = None) -> float:
-    return task_resolve_oomkilled_pod_grader(trajectory)
+    return task_resolve_oomkilled_pod_grader(trajectory, None)

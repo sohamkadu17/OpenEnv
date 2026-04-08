@@ -16,10 +16,10 @@ from openenv.core.env_server.types import State
 
 try:
     from ..models import KubeSreGymAction, KubeSreGymObservation
-    from ..tasks import OPENENV_TASKS, SCORE_EPSILON, TaskDefinition, choose_task
+    from ..tasks import SCORE_EPSILON, TaskDefinition, choose_task, get_tasks
 except ImportError:
     from models import KubeSreGymAction, KubeSreGymObservation
-    from tasks import OPENENV_TASKS, SCORE_EPSILON, TaskDefinition, choose_task
+    from tasks import SCORE_EPSILON, TaskDefinition, choose_task, get_tasks
 
 try:
     from .incidents import IncidentManager
@@ -33,7 +33,7 @@ class KubeSreGymEnvironment(Environment):
     """Environment that trains an agent to diagnose and recover Kubernetes failures."""
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
-    TASKS = OPENENV_TASKS
+    TASKS = get_tasks()
 
     ALLOWED_TOOLS = [
         "kubectl_get",
@@ -88,6 +88,10 @@ class KubeSreGymEnvironment(Environment):
             "total_pods": 0,
             "endpoint_status_code": None,
         }
+
+    def get_tasks(self) -> List[Dict[str, Any]]:
+        """Return plain task dictionaries with callable graders."""
+        return get_tasks()
 
     def reset(self) -> KubeSreGymObservation:
         self._episode += 1
