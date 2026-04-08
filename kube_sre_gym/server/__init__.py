@@ -6,6 +6,11 @@
 
 """Kube Sre Gym environment server components."""
 
-from .kube_sre_gym_environment import KubeSreGymEnvironment
+# Lazy imports to avoid requiring openenv at import time
+def __getattr__(name):
+    if name == "KubeSreGymEnvironment":
+        from .kube_sre_gym_environment import KubeSreGymEnvironment
+        return KubeSreGymEnvironment
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = ["KubeSreGymEnvironment"]

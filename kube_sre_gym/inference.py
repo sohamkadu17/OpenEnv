@@ -1,4 +1,4 @@
-"""Inference runner for kube_sre_gym with mandatory OpenAI-client integration."""
+"""Inference runner for the kube_sre_gym environment with multi-task benchmarking."""
 
 import asyncio
 import inspect
@@ -6,9 +6,8 @@ import json
 import os
 from typing import Dict, List, Optional, Tuple
 
-from openai import OpenAI
-
 from kube_sre_gym import KubeSreGymAction, KubeSreGymEnv
+from kube_sre_gym.models import TASK_CATALOG, TaskDefinition
 from kube_sre_gym.server.kube_sre_gym_environment import KubeSreGymEnvironment
 
 
@@ -29,20 +28,26 @@ def load_env_file(path: str = ".env") -> None:
 
 load_env_file()
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
-
+# Backward-compatible image env var names.
+IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
 ENV_HTTP_URL = os.getenv("ENV_HTTP_URL", "http://127.0.0.1:8000")
 TASK_NAME = os.getenv("TASK_NAME", "k8s-incident-recovery")
 BENCHMARK = os.getenv("BENCHMARK", "kube_sre_gym")
-MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))
-SUCCESS_SCORE_THRESHOLD = 0.80
+MODEL_NAME = os.getenv("MODEL_NAME", "heuristic-policy")
+MAX_STEPS = int(os.getenv("MAX_STEPS", "20"))
+MAX_STEPS_HARD = int(os.getenv("MAX_STEPS_HARD", "30"))
 
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_task_start(task_id: str, task_name: str, difficulty: str) -> None:
+    print(f"[TASK_START] task_id={task_id} task_name={task_name} difficulty={difficulty}", flush=True)
+
+
+def log_task_start(task_id: str, task_name: str, difficulty: str) -> None:
+    print(f"[TASK_START] task_id={task_id} task_name={task_name} difficulty={difficulty}", flush=True)
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
@@ -53,10 +58,24 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     )
 
 
+def log_task_end(task_id: str, success: bool, steps: int, graded_score: float, cumulative_reward: float) -> None:
+    print(
+        f"[TASK_END] task_id={task_id} success={str(success).lower()} steps={steps} graded_score={graded_score:.3f} cumulative_reward={cumulative_reward:.2f}",
+        flush=True,
+    )
+
+
+def log_task_end(task_id: str, success: bool, steps: int, graded_score: float, cumulative_reward: float) -> None:
+    print(
+        f"[TASK_END] task_id={task_id} success={str(success).lower()} steps={steps} graded_score={graded_score:.3f} cumulative_reward={cumulative_reward:.2f}",
+        flush=True,
+    )
+
+
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -65,14 +84,8 @@ def validate_prerequisites() -> Tuple[bool, List[str]]:
     issues: List[str] = []
     if MAX_STEPS <= 0:
         issues.append("MAX_STEPS must be > 0")
-    if not HF_TOKEN:
-        issues.append("HF_TOKEN is required")
-    if not API_BASE_URL:
-        issues.append("API_BASE_URL is required")
-    if not MODEL_NAME:
-        issues.append("MODEL_NAME is required")
-    if LOCAL_IMAGE_NAME is None and not ENV_HTTP_URL:
-        issues.append("Set LOCAL_IMAGE_NAME or ENV_HTTP_URL")
+    if IMAGE_NAME is None and not ENV_HTTP_URL:
+        issues.append("Set IMAGE_NAME or LOCAL_IMAGE_NAME or ENV_HTTP_URL")
     return len(issues) == 0, issues
 
 
@@ -105,119 +118,129 @@ def _fallback_action(observation) -> Tuple[str, Dict]:
     return "kubectl_events", {"limit": 10}
 
 
-def choose_action(client: OpenAI, observation, step: int) -> Tuple[str, Dict]:
-    allowed_tools = set(getattr(observation, "allowed_tools", []) or [])
-    payload = {
-        "step": step,
-        "incident": getattr(observation, "incident", ""),
-        "endpoint_status_code": getattr(observation, "endpoint_status_code", None),
-        "pod_summaries": (getattr(observation, "pod_summaries", []) or [])[:5],
-        "recent_events": (getattr(observation, "recent_events", []) or [])[:5],
-        "allowed_tools": sorted(allowed_tools),
-    }
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an SRE agent. Return JSON only: "
-                        '{"tool":"<allowed_tool>","args":{...}}. No markdown, no prose.'
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(payload, separators=(",", ":")),
-                },
-            ],
-            temperature=0.2,
-            max_tokens=180,
-        )
-        raw = (completion.choices[0].message.content or "").strip()
-        data = json.loads(raw)
-        tool = str(data.get("tool", "")).strip()
-        args = data.get("args", {})
-        if not tool or not isinstance(args, dict) or (allowed_tools and tool not in allowed_tools):
-            return _fallback_action(observation)
-        return tool, args
-    except Exception:
-        return _fallback_action(observation)
+def choose_action(observation) -> Tuple[str, Dict]:
+    return _fallback_action(observation)
 
 
-async def run_episode() -> Tuple[bool, int, float, List[float]]:
-    if LOCAL_IMAGE_NAME:
-        env = await _maybe_await(KubeSreGymEnv.from_docker_image(LOCAL_IMAGE_NAME))
-    else:
-        env = KubeSreGymEnv(base_url=ENV_HTTP_URL)
+async def run_task_episode(
+    task_def: TaskDefinition,
+    max_steps: int,
+    use_client: bool = False,
+) -> Tuple[bool, int, float, float]:
+    """Run a single task episode and return (success, steps, graded_score, cumulative_reward)."""
+    log_task_start(task_def.task_id, task_def.name, task_def.difficulty)
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-    rewards: List[float] = []
-    steps_taken = 0
-    success = False
-    score = 0.0
-
-    try:
-        result = await _maybe_await(env.reset())
-        for step in range(1, MAX_STEPS + 1):
-            tool, args = choose_action(client, result.observation, step)
-            action = KubeSreGymAction(thought="llm-policy", tool=tool, args=args)
-            try:
-                result = await _maybe_await(env.step(action))
-            except Exception as exc:
-                raise RuntimeError(f"client step failed: {exc}") from exc
-
-            reward = float(result.reward or 0.0)
-            done = bool(result.done)
-            rewards.append(reward)
-            steps_taken = step
-
-            action_str = json.dumps({"tool": tool, "args": args}, separators=(",", ":"))
-            tool_response = getattr(result.observation, "tool_response", {}) or {}
-            error = tool_response.get("stderr") if not tool_response.get("success", True) else None
-            log_step(step, action_str, reward, done, error)
-
-            if done:
-                break
-
-        score = 1.0 if bool(result.done) else min(max(sum(rewards) / 20.0, 0.0), 1.0)
-        success = score >= SUCCESS_SCORE_THRESHOLD or bool(result.done)
-        return success, steps_taken, score, rewards
-    finally:
-        try:
-            await _maybe_await(env.close())
-        except Exception:
-            pass
-
-
-def run_inprocess_episode(client: OpenAI) -> Tuple[bool, int, float, List[float]]:
-    env = KubeSreGymEnvironment()
     rewards: List[float] = []
     steps_taken = 0
     done = False
+    final_obs = None
 
-    observation = env.reset()
-    for step in range(1, MAX_STEPS + 1):
-        tool, args = choose_action(client, observation, step)
-        action = KubeSreGymAction(thought="llm-policy", tool=tool, args=args)
-        observation = env.step(action)
+    try:
+        if use_client:
+            if IMAGE_NAME:
+                env = await _maybe_await(KubeSreGymEnv.from_docker_image(IMAGE_NAME))
+            else:
+                env = KubeSreGymEnv(base_url=ENV_HTTP_URL)
+        else:
+            env = KubeSreGymEnvironment()
 
-        reward = float(observation.reward or 0.0)
-        done = bool(observation.done)
-        rewards.append(reward)
-        steps_taken = step
+        try:
+            result = await _maybe_await(env.reset()) if use_client else env.reset()
+            final_obs = result if not use_client else result.observation
 
-        action_str = json.dumps({"tool": tool, "args": args}, separators=(",", ":"))
-        tool_response = getattr(observation, "tool_response", {}) or {}
-        error = tool_response.get("stderr") if not tool_response.get("success", True) else None
-        log_step(step, action_str, reward, done, error)
+            for step in range(1, max_steps + 1):
+                tool, args = choose_action(final_obs)
+                action = KubeSreGymAction(thought="policy-step", tool=tool, args=args)
 
-        if done:
-            break
+                if use_client:
+                    result = await _maybe_await(env.step(action))
+                    final_obs = result.observation
+                    done = bool(result.done)
+                else:
+                    final_obs = env.step(action)
+                    done = bool(getattr(final_obs, "done", False))
 
-    score = 1.0 if done else min(max(sum(rewards) / 20.0, 0.0), 1.0)
-    success = score >= SUCCESS_SCORE_THRESHOLD or done
-    return success, steps_taken, score, rewards
+                reward = float(getattr(final_obs, "reward", 0.0) or 0.0)
+                rewards.append(reward)
+                steps_taken = step
+
+                action_str = json.dumps({"tool": tool, "args": args}, separators=(",", ":"))
+                tool_response = getattr(final_obs, "tool_response", {}) or {}
+                error = tool_response.get("stderr") if not tool_response.get("success", True) else None
+                log_step(step, action_str, reward, done, error)
+
+                if done:
+                    break
+        finally:
+            if use_client:
+                try:
+                    await _maybe_await(env.close())
+                except Exception:
+                    pass
+
+        cumulative_reward = sum(rewards)
+        graded_score = task_def.grader(final_obs, done, steps_taken, cumulative_reward)
+        success = graded_score >= 0.7
+
+        log_task_end(task_def.task_id, success, steps_taken, graded_score, cumulative_reward)
+        return success, steps_taken, graded_score, cumulative_reward
+
+    except Exception as e:
+        print(f"[ERROR] Task {task_def.task_id} failed with exception: {e}", flush=True)
+        log_task_end(task_def.task_id, False, steps_taken, 0.0, sum(rewards))
+        return False, steps_taken, 0.0, sum(rewards)
+
+
+async def run_all_tasks(use_client: bool = False) -> Tuple[List[Dict], float, bool]:
+    """Run all tasks and return (per_task_results, aggregate_score, overall_success)."""
+    per_task_results = []
+
+    for task_def in TASK_CATALOG:
+        max_steps = MAX_STEPS if task_def.difficulty != "hard" else MAX_STEPS_HARD
+
+        success, steps, graded_score, cumulative_reward = await run_task_episode(
+            task_def,
+            max_steps,
+            use_client=use_client,
+        )
+
+        result = {
+            "task_id": task_def.task_id,
+            "name": task_def.name,
+            "difficulty": task_def.difficulty,
+            "success": success,
+            "steps": steps,
+            "graded_score": graded_score,
+            "cumulative_reward": cumulative_reward,
+        }
+        per_task_results.append(result)
+
+    weights = {"easy": 1.0, "medium": 1.5, "hard": 2.0}
+    weighted_sum = sum(
+        result["graded_score"] * weights[result["difficulty"]]
+        for result in per_task_results
+    )
+    total_weight = sum(weights[result["difficulty"]] for result in per_task_results)
+    aggregate_score = weighted_sum / total_weight if total_weight > 0 else 0.0
+    overall_success = all(result["success"] for result in per_task_results)
+
+    return per_task_results, aggregate_score, overall_success
+
+
+def run_inprocess_fallback() -> Tuple[bool, int, float, List[float]]:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        per_task_results, aggregate_score, overall_success = loop.run_until_complete(
+            run_all_tasks(use_client=False)
+        )
+        total_steps = sum(r["steps"] for r in per_task_results)
+        total_rewards = []
+        for r in per_task_results:
+            total_rewards.extend([r["cumulative_reward"] / max(1, r["steps"])] * r["steps"])
+        return overall_success, total_steps, aggregate_score, total_rewards
+    finally:
+        loop.close()
 
 
 async def main() -> None:
@@ -226,17 +249,36 @@ async def main() -> None:
         raise RuntimeError("; ".join(issues))
 
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
-    success = False
-    steps_taken = 0
-    score = 0.0
-    rewards: List[float] = []
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     try:
-        success, steps_taken, score, rewards = await run_episode()
-    except Exception:
-        success, steps_taken, score, rewards = run_inprocess_episode(client)
-    finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        per_task_results, aggregate_score, overall_success = await run_all_tasks(use_client=True)
+    except Exception as e:
+        print(f"[INFO] Client mode failed ({e}), falling back to in-process", flush=True)
+        overall_success, _, aggregate_score, _ = run_inprocess_fallback()
+        per_task_results = []
+
+    print("\n" + "=" * 70, flush=True)
+    print(f"BENCHMARK RESULTS: {BENCHMARK} ({MODEL_NAME})", flush=True)
+    print("=" * 70, flush=True)
+
+    if per_task_results:
+        for result in per_task_results:
+            status = "PASS" if result["success"] else "FAIL"
+            print(
+                f"  {status} | {result['name']:40s} | "
+                f"Score: {result['graded_score']:.3f} | Steps: {result['steps']:2d} | "
+                f"Reward: {result['cumulative_reward']:7.2f}",
+                flush=True,
+            )
+
+    print("-" * 70, flush=True)
+    print(
+        f"AGGREGATE SCORE: {aggregate_score:.3f} | "
+        f"OVERALL: {'PASS' if overall_success else 'FAIL'}",
+        flush=True,
+    )
+    print("=" * 70 + "\n", flush=True)
+
+    log_end(success=overall_success, steps=0, score=aggregate_score, rewards=[])
 
 
 if __name__ == "__main__":
