@@ -195,7 +195,7 @@ SIMPLE_TASKS: List[Dict[str, Any]] = [
 
 def get_tasks() -> List[Dict[str, Any]]:
     """Return plain task dictionaries for validator discovery."""
-    return [dict(task) for task in SIMPLE_TASKS]
+    return SIMPLE_TASKS
 
 
 def choose_task(difficulty: str, episode: int, task_id: str = "") -> TaskDefinition:

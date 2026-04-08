@@ -10,6 +10,7 @@ from openai import OpenAI
 
 from kube_sre_gym import KubeSreGymAction, KubeSreGymEnv
 from kube_sre_gym.models import SCORE_EPSILON, TASK_CATALOG, TaskDefinition
+from kube_sre_gym.tasks import get_tasks as _get_tasks
 from kube_sre_gym.server.kube_sre_gym_environment import KubeSreGymEnvironment
 
 
@@ -18,6 +19,11 @@ TASK_INCIDENT_OVERRIDES = {
     "task_recover_crashloopbackoff_pod": "crash_loop_container",
     "task_resolve_oomkilled_pod": "oom_killed_pod",
 }
+
+
+def get_tasks() -> List[Dict[str, Any]]:
+    """Validator fallback entrypoint for task discovery."""
+    return _get_tasks()
 
 
 def load_env_file(path: str = ".env") -> None:
